@@ -1,4 +1,4 @@
-import { dayKey, firstLine, median } from "./format";
+import { dayKey, firstLine, lastDays, median } from "./format";
 import type { Run } from "./github";
 
 export interface Failure {
@@ -84,8 +84,7 @@ export interface DayBucket {
 }
 
 export function dailyBuckets(runs: Run[], now: number, days = 14): DayBucket[] {
-  const out: DayBucket[] = [];
-  for (let i = days - 1; i >= 0; i--) out.push({ key: dayKey(now - i * 86400000), pass: 0, fail: 0 });
+  const out: DayBucket[] = lastDays(now, days).map((key) => ({ key, pass: 0, fail: 0 }));
   const idx = new Map(out.map((b, i) => [b.key, i]));
   for (const r of runs) {
     if (!isCounted(r)) continue;

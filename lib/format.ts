@@ -89,3 +89,24 @@ export function prettyName(file: string): string {
   const cap = words.charAt(0).toUpperCase() + words.slice(1);
   return m ? `${m[1]} ${cap}` : cap;
 }
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** The last n Los Angeles calendar days as YYYY-MM-DD, oldest first, DST-safe. */
+export function lastDays(now: number, n = 14): string[] {
+  const [y, m, d] = dayKey(now).split("-").map(Number);
+  const base = Date.UTC(y, m - 1, d);
+  const out: string[] = [];
+  for (let i = n - 1; i >= 0; i--) out.push(new Date(base - i * 86400000).toISOString().slice(0, 10));
+  return out;
+}
+
+/** "2026-10-07" -> { day: "7", mon: "Oct" } */
+export function dayParts(key: string): { day: string; mon: string } {
+  return { day: String(Number(key.slice(8))), mon: MONTHS[Number(key.slice(5, 7)) - 1] };
+}
+
+/** "Oct 7, 12:55 PM" in Los Angeles time. */
+export function fmtDayTime(iso: string): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: TZ, month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true }).format(Date.parse(iso));
+}

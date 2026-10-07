@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
-import { buildChains, dailyBuckets, fixLabel, type PipelineStats } from "@/lib/chains";
-import { countByStatus, STATUSES, type BacklogSection, type Status } from "@/lib/backlog";
-import { durMs, fmtDay, fmtLA, relTime, truncate, prettyName } from "@/lib/format";
-import { REPO, type Data, type Pull, type Result, type Run } from "@/lib/github";
-import { changeLog, docFiles, groupAgents, hookFiles, parseAgent, skillDirs, type AgentInfo } from "@/lib/team";
-import { closedUnmerged, latestMainRun, merged, openPrs, type CiState } from "@/lib/pulls";
+import { buildChains, dailyBuckets, fixLabel, isFail, isPass } from "@/lib/chains";
+import { countByStatus, type BacklogItem, type BacklogSection, type Status } from "@/lib/backlog";
+import { dayParts, durMs, fmtDayTime, fmtLA, lastDays, dayKey, relMs, relTime, firstLine } from "@/lib/format";
+import { REPO, type Data, type DocEntry, type Pull, type Result, type Run } from "@/lib/github";
+import { groupAgents, hookFiles, changeLog, monogram, parseAgent, type AgentInfo } from "@/lib/team";
+import { latestMainRun, merged, openPrs, PR_KINDS, prKind, type CiState, type PrKind } from "@/lib/pulls";
 
 const GH = `https://github.com/${REPO}`;
 
@@ -12,59 +12,56 @@ export function ErrorLine({ msg }: { msg: string }) {
   return <p className="err" role="alert">{msg}</p>;
 }
 function Empty({ children }: { children: ReactNode }) {
-  return <p className="empty">{children}</p>;
+  return <p className="empty m">{children}</p>;
 }
-function Sub({ children }: { children: ReactNode }) {
-  return <h3 className="sub">{children}</h3>;
+function Sub({ children, right }: { children: ReactNode; right?: ReactNode }) {
+  return (
+    <div className="sub m">
+      <span>{children}</span>
+      {right && <span className="subr">{right}</span>}
+    </div>
+  );
 }
-const Sha = ({ sha }: { sha: string }) => <code>{sha.slice(0, 7)}</code>;
 
 export function Section({ id, n, title, children }: { id: string; n: string; title: string; children: ReactNode }) {
   return (
-    <section id={id} className="sec">
-      <h2><span className="secnum">{n}</span>{title}</h2>
-      {children}
+    <section id={id} className="row">
+      <div className="lab">
+        <div className="n m">{n}</div>
+        <h2>{title}</h2>
+      </div>
+      <div className="body">{children}</div>
     </section>
   );
 }
 
-const CI_LABEL: Record<CiState, string> = { ready: "Ready to merge", failing: "CI failing", running: "CI running", none: "No CI" };
-const CI_TONE: Record<CiState, string> = { ready: "green", failing: "red", running: "blue", none: "gray" };
+const CI_LABEL: Record<CiState, string> = { ready: "CI green", failing: "CI failing", running: "CI running", none: "No CI" };
+const STATUS_ORDER: Status[] = ["review", "building", "spec", "todo", "other"];
+const STACK_ORDER: Status[] = ["done", "review", "building", "spec", "other", "todo"];
 
-function Pill({ tone, children }: { tone: string; children: ReactNode }) {
-  return <span className={`pill ${tone}`}>{children}</span>;
+function Pill({ status }: { status: Status }) {
+  return <span className={`pill st-${status} m`}>{status}</span>;
 }
-const STATUS_TONE: Record<Status, string> = { done: "green", review: "amber", building: "blue", spec: "violet", todo: "gray", other: "gray" };
 
 /* ---------------- header ---------------- */
 export function Header({ data, now }: { data: Data; now: number }) {
-  let main: ReactNode = <span className="muted">unknown</span>;
+  let main: ReactNode = <b>Unknown</b>;
   if (data.runs.ok) {
     const r = latestMainRun(data.runs.data);
     main = r ? (
-      <a href={r.html_url} className="mainstat">
-        <span className={`dot ${r.conclusion === "success" ? "green" : "red"}`} />
-        main CI {r.conclusion === "success" ? "passing" : "failing"} <span className="muted">{relTime(r.created_at, now)}</span>
+      <a href={r.html_url}>
+        <b><span className={`dot ${r.conclusion === "success" ? "" : "red"}`} />{r.conclusion === "success" ? "Passing" : "Failing"}</b>
       </a>
-    ) : <span className="muted">no completed main runs</span>;
+    ) : <b>No runs</b>;
   }
   return (
-    <header className="top">
-      <div className="wrap toprow">
-        <h1>AFTERLIGHT <span>ops</span></h1>
-        <div className="meta">
-          <a href={GH} className="mono">{REPO}</a>
-          {main}
-          <span className="muted">fetched {fmtLA(now)}</span>
-        </div>
+    <header>
+      <h1>Afterlight<br /><em>Ops</em></h1>
+      <div className="meta m">
+        <div>Repository<a href={GH}><b>{REPO.toLowerCase()}</b></a></div>
+        <div>Main{main}</div>
+        <div>Synced<b>{fmtLA(now)}</b></div>
       </div>
-      <nav className="wrap nav" aria-label="Sections">
-        <a href="#needs">Needs you</a>
-        <a href="#pipeline">Pipeline</a>
-        <a href="#plan">Plan</a>
-        <a href="#team">Team</a>
-        <a href="#activity">Activity</a>
-      </nav>
     </header>
   );
 }
@@ -75,141 +72,180 @@ export function Needs({ data, sections, now }: { data: Data; sections: Result<Ba
   const mainFailed = mainRun !== null && mainRun.conclusion !== "success";
   const review = sections.ok ? sections.data.flatMap((s) => s.items.filter((i) => i.status === "review").map((i) => ({ i, s: s.name }))) : [];
   const list = data.pulls.ok && data.runs.ok ? openPrs(data.pulls.data, data.runs.data) : null;
+  const count = (list?.length ?? 0) + review.length;
 
   return (
     <Section id="needs" n="01" title="Needs you">
-      {!data.runs.ok && <ErrorLine msg={data.runs.error} />}
       {mainFailed && mainRun && (
         <div className="banner">
-          <strong>Main is red.</strong> Latest run on main failed {relTime(mainRun.created_at, now)}: {truncate(fixLabel(mainRun), 100)}{" "}
-          <a href={mainRun.html_url}>open run</a>
+          <b>Main is red.</b> The latest run on main failed {relTime(mainRun.created_at, now)}: {fixLabel(mainRun)}{" "}
+          <a href={mainRun.html_url}>Open run</a>
         </div>
       )}
-      <Sub>Open pull requests</Sub>
-      {!data.pulls.ok ? <ErrorLine msg={data.pulls.error} /> : !data.runs.ok ? <ErrorLine msg="Cannot match CI to PRs without runs." /> : list && list.length === 0 ? (
-        <Empty>No open pull requests.</Empty>
-      ) : (
-        <table className="tbl">
-          <thead><tr><th>PR</th><th>Title</th><th>Branch</th><th>CI</th><th>Age</th></tr></thead>
-          <tbody>
-            {list?.map(({ pr, ci, run }) => (
-              <tr key={pr.number}>
-                <td data-l="PR"><a href={pr.html_url} className="mono">#{pr.number}</a></td>
-                <td data-l="Title">{truncate(pr.title, 100)}</td>
-                <td data-l="Branch"><code>{pr.head.ref}</code></td>
-                <td data-l="CI">{run ? <a href={run.html_url}><Pill tone={CI_TONE[ci]}>{CI_LABEL[ci]}</Pill></a> : <Pill tone={CI_TONE[ci]}>{CI_LABEL[ci]}</Pill>}</td>
-                <td data-l="Age">{relTime(pr.created_at, now)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      <Sub>Backlog items in review</Sub>
-      {!sections.ok ? <ErrorLine msg={sections.error} /> : review.length === 0 ? (
-        <Empty>Nothing in review. No backlog item is waiting on your approval.</Empty>
-      ) : (
-        <ul className="rows">
-          {review.map(({ i, s }) => (
-            <li key={i.id + s}>
-              <code className="id">{i.id}</code>
-              <span className="grow">{truncate(i.text, 140)}</span>
-              <span className="muted small">{s}</span>
-            </li>
+      <div className="hero">
+        <div className={`num ${count === 0 ? "zero" : ""}`} aria-label={`${count} items need you`}>{count}</div>
+        <div className="grow">
+          {!data.pulls.ok && <ErrorLine msg={data.pulls.error} />}
+          {data.pulls.ok && !data.runs.ok && <ErrorLine msg={`${data.runs.error} (cannot match CI to PRs)`} />}
+          {list && list.length === 0 && <Empty>No open pull requests.</Empty>}
+          {list?.map(({ pr, ci, run }) => (
+            <div className="prline" key={pr.number}>
+              <a className="m" href={pr.html_url}>#{pr.number}</a>
+              <div className="grow">
+                <a className="t" href={pr.html_url}>{pr.title}</a>
+                <div className="pm m">
+                  <span>{pr.head.ref}</span>
+                  <span>{relMs(now - Date.parse(pr.created_at))} old</span>
+                  {run ? <a className={`ci ci-${ci}`} href={run.html_url}>{CI_LABEL[ci]}</a> : <span className={`ci ci-${ci}`}>{CI_LABEL[ci]}</span>}
+                </div>
+              </div>
+              <a className={`go ${ci === "ready" ? "" : "alt"}`} href={pr.html_url}>{ci === "ready" ? "Merge" : "View"}</a>
+            </div>
           ))}
-        </ul>
-      )}
+          {!sections.ok && <ErrorLine msg={sections.error} />}
+          {sections.ok && review.length === 0 && <Empty>Nothing in review. No backlog item is waiting on your approval.</Empty>}
+          {review.length > 0 && (
+            <>
+              <Sub>In review · {review.length}</Sub>
+              <ul className="rv">
+                {review.map(({ i, s }) => (
+                  <li key={s + i.id}>
+                    <span className="id m">{i.id}</span>
+                    <span className="tx clamp2" title={i.text}>{i.text}</span>
+                    <span className="sec-name m">{s}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      </div>
     </Section>
   );
 }
 
-/* ---------------- 2 pipeline ---------------- */
-function Kpi({ label, value, tone }: { label: string; value: string; tone?: string }) {
+/* ---------------- shared day chart ---------------- */
+interface Col {
+  key: string;
+  segs: { cls: string; n: number }[];
+  title: string;
+}
+function DayChart({ cols, label }: { cols: Col[]; label: string }) {
+  const tot = (c: Col) => c.segs.reduce((a, s) => a + s.n, 0);
+  const max = Math.max(1, ...cols.map(tot));
   return (
-    <div className="kpi">
-      <div className={`kv ${tone ?? ""}`}>{value}</div>
-      <div className="kl">{label}</div>
+    <div role="img" aria-label={label}>
+      <div className="days">
+        {cols.map((c) => {
+          const n = tot(c);
+          return (
+            <div key={c.key} className="day" title={c.title}>
+              {c.segs.filter((s) => s.n > 0).map((s) => <i key={s.cls} className={s.cls} style={{ height: `${(s.n / max) * 82}%` }} />)}
+              {n > 0 && <b style={{ bottom: `calc(${(n / max) * 82}% + 4px)` }}>{n}</b>}
+            </div>
+          );
+        })}
+      </div>
+      <div className="dl m">
+        {cols.map((c, i) => {
+          const p = dayParts(c.key);
+          return (
+            <span key={c.key} className={tot(c) ? "on" : ""}>
+              {(i === 0 || p.day === "1") && <em className="mo">{p.mon} </em>}{p.day}
+            </span>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-function PrCell({ n }: { n: number | null }) {
-  return n ? <a href={`${GH}/pull/${n}`} className="mono">#{n}</a> : <span className="muted">-</span>;
+/* ---------------- 2 pipeline ---------------- */
+function Kpi({ label, value, hot }: { label: string; value: string; hot?: boolean }) {
+  return (
+    <div>
+      <b className={hot ? "hot" : ""}>{value}</b>
+      <span>{label}</span>
+    </div>
+  );
 }
+
+const runResult = (r: Run) => (isPass(r) ? "pass" : isFail(r) ? "fail" : r.status !== "completed" ? (r.status ?? "running") : (r.conclusion ?? "unknown"));
+const runTitle = (r: Run) => r.display_title || firstLine(r.head_commit?.message) || r.name || String(r.id);
 
 export function Pipeline({ runs, now }: { runs: Result<Run[]>; now: number }) {
   if (!runs.ok) return <Section id="pipeline" n="02" title="Pipeline"><ErrorLine msg={runs.error} /></Section>;
-  const st: PipelineStats = buildChains(runs.data);
-  const top = st.failureList.slice(0, 20);
+  const st = buildChains(runs.data);
+  const ordered = [...runs.data].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
   const days = dailyBuckets(runs.data, now);
-  const max = Math.max(1, ...days.map((d) => d.pass + d.fail));
+  const top = st.failureList.slice(0, 20);
   return (
     <Section id="pipeline" n="02" title="Pipeline">
-      <div className="kpis">
-        <Kpi label={`pass rate, last ${runs.data.length} runs`} value={st.passRate === null ? "n/a" : `${Math.round(st.passRate * 100)}%`} tone={st.passRate !== null && st.passRate < 0.8 ? "red" : "green"} />
-        <Kpi label="failures" value={String(st.failures)} />
-        <Kpi label="still failing" value={String(st.stillFailing)} tone={st.stillFailing ? "red" : "green"} />
-        <Kpi label="median time to fix" value={st.medianTimeToFix === null ? "n/a" : durMs(st.medianTimeToFix)} />
+      <div className="kp">
+        <Kpi label="Pass rate" value={st.passRate === null ? "n/a" : `${Math.round(st.passRate * 100)}%`} />
+        <Kpi label="Runs · latest" value={String(runs.data.length)} />
+        <Kpi label={st.stillFailing ? `Failures · ${st.stillFailing} still failing` : "Failures"} value={String(st.failures)} hot={st.failures > 0} />
+        <Kpi label="Median fix" value={st.medianTimeToFix === null ? "n/a" : durMs(st.medianTimeToFix)} />
       </div>
-      <Sub>Runs per day, 14 days (PT)</Sub>
-      <div className="strip" role="img" aria-label="Daily passing and failing CI runs for the last 14 days">
-        {days.map((d) => (
-          <div key={d.key} className="day" title={`${d.key}: ${d.pass} passed, ${d.fail} failed`}>
-            <div className="bars">
-              <div className="stack" style={{ height: `${((d.pass + d.fail) / max) * 100}%` }}>
-                {d.fail > 0 && <i className="b red" style={{ flexGrow: d.fail }} />}
-                {d.pass > 0 && <i className="b green" style={{ flexGrow: d.pass }} />}
-              </div>
-            </div>
-            <span className="dn">{d.pass + d.fail || ""}</span>
-            <span className="dl">{d.key.slice(8)}</span>
-          </div>
+      <div className="strip" role="group" aria-label="Last CI runs, oldest to newest">
+        {ordered.map((r) => (
+          <a key={r.id} href={r.html_url} className={isFail(r) ? "f" : isPass(r) ? "" : "o"} title={`${r.head_branch ?? "?"} · ${runTitle(r)} · ${runResult(r)}`} aria-label={`${runResult(r)}: ${runTitle(r)}`} />
         ))}
       </div>
-      <p className="legend"><i className="sw green" /> pass <i className="sw red" /> fail; day of month on the axis, cancelled and skipped runs ignored.</p>
-      <Sub>Latest failures and their fixes</Sub>
+      <div className="ax m"><span>Oldest</span><span className="mid">Every bar is one CI run</span><span>Newest</span></div>
+
+      <Sub right="Pacific time">Runs per day · 14 days</Sub>
+      <DayChart
+        label="Daily passing and failing CI runs for the last 14 days"
+        cols={days.map((d) => ({ key: d.key, segs: [{ cls: "k-pass", n: d.pass }, { cls: "k-fail", n: d.fail }], title: `${d.key}: ${d.pass} passed, ${d.fail} failed` }))}
+      />
+      <div className="leg m"><span><i className="k-pass" />pass</span><span><i className="k-fail" />fail</span><span className="r">Cancelled and skipped runs ignored</span></div>
+
+      <Sub>Failure → fix</Sub>
       {top.length === 0 ? <Empty>No failed runs in the last {runs.data.length} runs.</Empty> : (
-        <table className="tbl">
-          <thead><tr><th>Branch</th><th>PR</th><th>Run</th><th>When</th><th>Outcome</th></tr></thead>
-          <tbody>
-            {top.map((f) => (
-              <tr key={f.run.id}>
-                <td data-l="Branch"><code>{f.branch}</code></td>
-                <td data-l="PR"><PrCell n={f.prNumber} /></td>
-                <td data-l="Run"><a href={f.run.html_url}>{truncate(f.run.display_title || f.run.name || String(f.run.id), 70)}</a></td>
-                <td data-l="When">{relTime(f.run.created_at, now)}</td>
-                <td data-l="Outcome">
-                  {f.fixedBy ? (
-                    <span>
-                      <Pill tone="green">fixed in {durMs(f.timeToFix ?? 0)}</Pill>{" "}
-                      <a href={f.fixedBy.html_url} className="small">{truncate(fixLabel(f.fixedBy), 70)}</a>
-                    </span>
-                  ) : <Pill tone="red">still failing</Pill>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div>
+          {top.map((f) => (
+            <div className="fx" key={f.run.id}>
+              <span className="m">{f.prNumber ? <a href={`${GH}/pull/${f.prNumber}`}>#{f.prNumber}</a> : "–"}</span>
+              <div className="grow">
+                <div className="m fb">{f.branch}</div>
+                <a className="ft" href={f.run.html_url}>{runTitle(f.run)}</a>
+                {f.fixedBy && <div className="fs">Fixed by <a href={f.fixedBy.html_url}>{fixLabel(f.fixedBy)}</a></div>}
+                <div className="fs m">{relTime(f.run.created_at, now)}</div>
+              </div>
+              {f.fixedBy ? <b className="fd">{durMs(f.timeToFix ?? 0)}</b> : <b className="fd still">Still failing</b>}
+            </div>
+          ))}
+        </div>
       )}
     </Section>
   );
 }
 
 /* ---------------- 3 plan ---------------- */
-function StackBar({ counts, total }: { counts: Record<Status, number>; total: number }) {
+function ItemRow({ i }: { i: BacklogItem }) {
   return (
-    <div className="pbar" aria-hidden="true">
-      {total > 0 && (["done", "review", "building", "spec", "todo", "other"] as Status[]).map((s) => counts[s] > 0 && <i key={s} className={`seg ${STATUS_TONE[s]} s-${s}`} style={{ flexGrow: counts[s] }} />)}
-    </div>
+    <li>
+      <span className="id m">{i.id}</span>
+      <span className="sz m">{i.size}</span>
+      <Pill status={i.status} />
+      <span className="tx clamp3" title={i.text}>{i.text}</span>
+    </li>
   );
 }
 
-function DocList({ title, base, files }: { title: string; base: string; files: string[] }) {
+function DocList({ title, files }: { title: string; files: DocEntry[] }) {
   return (
     <div>
-      <Sub>{title}</Sub>
+      <Sub>{title} · {files.length}</Sub>
       {files.length === 0 ? <Empty>None found.</Empty> : (
-        <ul className="links">
-          {files.map((f) => <li key={f}><a href={`${GH}/blob/main/${f}`}>{prettyName(f)}</a><span className="muted small mono">{f.replace(base, "")}</span></li>)}
+        <ul className="docs">
+          {files.map((f) => (
+            <li key={f.path}>
+              <a href={`${GH}/blob/main/${f.path}`}>{f.title}</a>
+              <span className="m fn">{f.path.replace(/^docs\/[^/]+\//, "")}</span>
+            </li>
+          ))}
         </ul>
       )}
     </div>
@@ -219,56 +255,51 @@ function DocList({ title, base, files }: { title: string; base: string; files: s
 export function Plan({ sections, data }: { sections: Result<BacklogSection[]>; data: Data }) {
   return (
     <Section id="plan" n="03" title="Plan">
-      {!sections.ok ? <ErrorLine msg={sections.error} /> : sections.data.length === 0 ? <Empty>docs/backlog.md has no sections with tables.</Empty> : (
+      {!sections.ok ? <ErrorLine msg={sections.error} /> : sections.data.length === 0 ? <Empty>docs/backlog.md has no sections.</Empty> : (
         <div className="plans">
           {sections.data.map((s) => {
             const c = countByStatus(s.items);
             const total = s.items.length;
-            const pct = total ? Math.round((c.done / total) * 100) : null;
+            const pct = total ? Math.round((c.done / total) * 100) : 0;
+            const open = STATUS_ORDER.flatMap((k) => s.items.filter((i) => i.status === k));
+            const done = s.items.filter((i) => i.status === "done");
             return (
-              <details key={s.name} className="plan">
-                <summary>
-                  <span className="pname">{s.name}</span>
-                  <span className="pct mono">{pct === null ? "n/a" : `${pct}%`}</span>
-                  <StackBar counts={c} total={total} />
-                  <span className="counts small">
-                    {STATUSES.filter((k) => c[k] > 0).map((k) => <span key={k}><i className={`sw ${STATUS_TONE[k]}`} />{c[k]} {k}</span>)}
-                    {total === 0 && <span className="muted">no item rows</span>}
-                  </span>
-                </summary>
-                {s.intro && <p className="intro">{truncate(s.intro, 240)}</p>}
-                {s.items.length > 0 && (
-                  <ul className="items">
-                    {s.items.map((i) => (
-                      <li key={i.id}>
-                        <code className="id">{i.id}</code>
-                        <span className="muted mono small sz">{i.size}</span>
-                        <Pill tone={STATUS_TONE[i.status]}>{i.status}</Pill>
-                        <span className="grow">{truncate(i.text, 140)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {s.prs.length > 0 && (
-                  <ul className="items prs">
-                    {s.prs.map((p) => (
-                      <li key={p.pr}>
-                        <code className="id">PR</code>
-                        <Pill tone={STATUS_TONE[p.status]}>{p.status}</Pill>
-                        <span className="grow">{p.pr}: {truncate(p.items, 100)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </details>
+              <article className="ps" key={s.name}>
+                <div className="pl">
+                  {total > 0 ? (
+                    <div className="ph">
+                      <div className="stackw">
+                        <div className="stack" role="img" aria-label={`${c.done} of ${total} done`}>
+                          {STACK_ORDER.map((k) => c[k] > 0 && <i key={k} className={`s-${k}`} style={{ flex: c[k] }} title={`${c[k]} ${k}`} />)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="pp">{pct}<span>%</span></div>
+                        <div className="m cnt">{c.done}/{total} done</div>
+                      </div>
+                    </div>
+                  ) : <div className="m cnt">No item table</div>}
+                  <h3 className="nm">{s.name}</h3>
+                  {s.intro && <p className="intro">{s.intro}</p>}
+                </div>
+                <div className="pr">
+                  {open.length > 0 && <ul className="items">{open.map((i) => <ItemRow key={i.id} i={i} />)}</ul>}
+                  {done.length > 0 && (
+                    <details className="dn">
+                      <summary className="m">{done.length} done</summary>
+                      <ul className="items">{done.map((i) => <ItemRow key={i.id} i={i} />)}</ul>
+                    </details>
+                  )}
+                </div>
+              </article>
             );
           })}
         </div>
       )}
-      {!data.tree.ok ? <ErrorLine msg={data.tree.error} /> : (
+      {!data.docs.ok ? <ErrorLine msg={data.docs.error} /> : (
         <div className="two">
-          <DocList title="Specs" base="docs/specs/" files={docFiles(data.tree.data, "specs")} />
-          <DocList title="Decisions (ADRs)" base="docs/decisions/" files={docFiles(data.tree.data, "decisions")} />
+          <DocList title="Specs" files={data.docs.data.specs} />
+          <DocList title="Decisions (ADRs)" files={data.docs.data.decisions} />
         </div>
       )}
     </Section>
@@ -276,93 +307,135 @@ export function Plan({ sections, data }: { sections: Result<BacklogSection[]>; d
 }
 
 /* ---------------- 4 team ---------------- */
-function AgentCard({ a }: { a: AgentInfo }) {
+function Circles({ list, solid }: { list: AgentInfo[]; solid: boolean }) {
   return (
-    <div className="agent">
-      <div className="ahead"><a href={`${GH}/blob/main/${a.file}`} className="aname mono">{a.name}</a>{a.effort && <span className="muted small mono">{a.effort}</span>}</div>
-      <p className="adesc">{truncate(a.description, 160)}</p>
-      {a.tools.length > 0 && <p className="atools mono">{a.tools.join(" ")}</p>}
+    <div className={`mg ${solid ? "" : "s"}`}>
+      {list.map((a) => <span key={a.file} title={a.name}>{monogram(a.name)}</span>)}
     </div>
   );
 }
 
 export function Team({ data, now }: { data: Data; now: number }) {
-  const log = data.commitsClaude.ok || data.commitsClaudeMd.ok ? changeLog([data.commitsClaude.ok ? data.commitsClaude.data : [], data.commitsClaudeMd.ok ? data.commitsClaudeMd.data : []]) : null;
-  const groups = data.agents.ok ? groupAgents(data.agents.data.agents.map((x) => parseAgent(x.path, x.raw))) : null;
+  const log = data.commitsClaude.ok || data.commitsClaudeMd.ok ? changeLog([data.commitsClaude.ok ? data.commitsClaude.data : [], data.commitsClaudeMd.ok ? data.commitsClaudeMd.data : []], 12) : null;
+  const agents = data.agents.ok ? data.agents.data.agents.map((x) => parseAgent(x.path, x.raw)) : null;
+  const groups = agents ? groupAgents(agents) : null;
   return (
     <Section id="team" n="04" title="Team">
-      <Sub>Agents</Sub>
-      {!data.agents.ok ? <ErrorLine msg={data.agents.error} /> : (
+      {!data.agents.ok ? <ErrorLine msg={data.agents.error} /> : groups && (
         <>
           {data.agents.data.failed.length > 0 && <ErrorLine msg={`${data.agents.data.failed.length} agent file(s) failed to load: ${data.agents.data.failed[0]}`} />}
-          {groups && (["opus", "sonnet", "other"] as const).map((g) => groups[g].length > 0 && (
-            <div key={g} className="group">
-              <h4 className={`gh ${g}`}>{g} <span className="muted">{groups[g].length}</span></h4>
-              <div className="agents">{groups[g].map((a) => <AgentCard key={a.file} a={a} />)}</div>
+          <div className="tm">
+            <div>
+              <h4 className="m">Opus · {groups.opus.length}</h4>
+              <Circles list={groups.opus} solid />
+              <h4 className="m gap">Sonnet · {groups.sonnet.length}</h4>
+              <Circles list={groups.sonnet} solid={false} />
+              {groups.other.length > 0 && (
+                <>
+                  <h4 className="m gap">Other · {groups.other.length}</h4>
+                  <Circles list={groups.other} solid={false} />
+                </>
+              )}
             </div>
-          ))}
+            <div className="lg">
+              {[...groups.opus, ...groups.sonnet, ...groups.other].map((a) => (
+                <div key={a.file}>
+                  <a className="m an" href={`${GH}/blob/main/${a.file}`}>{a.name}</a>
+                  <span className="m am">{a.model}</span>
+                  <span className="ad" title={a.description}>{a.description}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </>
       )}
       <div className="two">
         <div>
           <Sub>Skills</Sub>
-          {!data.tree.ok ? <ErrorLine msg={data.tree.error} /> : (() => {
-            const s = skillDirs(data.tree.data);
-            return s.length ? <p className="chips">{s.map((x) => <a key={x} className="chip mono" href={`${GH}/tree/main/.claude/skills/${x}`}>{x}</a>)}</p> : <Empty>No skills found.</Empty>;
-          })()}
-        </div>
-        <div>
+          {!data.skills.ok ? <ErrorLine msg={data.skills.error} /> : (
+            <div className="lg">
+              {data.skills.data.skills.map((k) => (
+                <div key={k.name}>
+                  <a className="m an" href={`${GH}/tree/main/.claude/skills/${k.name}`}>/{k.name}</a>
+                  <span className="ad" title={k.description}>{k.description}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <Sub>Hooks</Sub>
           {!data.tree.ok ? <ErrorLine msg={data.tree.error} /> : (() => {
             const h = hookFiles(data.tree.data);
-            return h.length ? <p className="chips">{h.map((x) => <a key={x} className="chip mono" href={`${GH}/blob/main/.claude/hooks/${x}`}>{x}</a>)}</p> : <Empty>No hooks found.</Empty>;
+            return h.length ? <div className="lg">{h.map((x) => <div key={x}><a className="m an hk" href={`${GH}/blob/main/.claude/hooks/${x}`}>{x}</a></div>)}</div> : <Empty>No hooks found.</Empty>;
           })()}
         </div>
+        <div>
+          <Sub>Change log</Sub>
+          {!data.commitsClaude.ok && <ErrorLine msg={data.commitsClaude.error} />}
+          {!data.commitsClaudeMd.ok && <ErrorLine msg={data.commitsClaudeMd.error} />}
+          {log && (log.length === 0 ? <Empty>No commits touched the team files.</Empty> : (
+            <div className="lg log">
+              {log.map((c) => (
+                <div key={c.sha}>
+                  <span className="m when" title={relTime(c.date, now)}>{c.date ? dayLabel(c.date) : "?"}</span>
+                  <a className="ad" href={c.url} title={c.title}>{c.title}</a>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
       </div>
-      <Sub>Team change log (.claude and CLAUDE.md)</Sub>
-      {!data.commitsClaude.ok && <ErrorLine msg={data.commitsClaude.error} />}
-      {!data.commitsClaudeMd.ok && <ErrorLine msg={data.commitsClaudeMd.error} />}
-      {log && (log.length === 0 ? <Empty>No commits touched the team files.</Empty> : (
-        <ul className="rows">
-          {log.map((c) => (
-            <li key={c.sha}>
-              <span className="muted small mono when" title={relTime(c.date, now)}>{c.date ? fmtDay(c.date) : "?"}</span>
-              <a className="grow" href={c.url}>{truncate(c.title, 140)}</a>
-              <span className="muted small">{c.author} <Sha sha={c.sha} /></span>
+    </Section>
+  );
+}
+
+function dayLabel(iso: string): string {
+  const p = dayParts(dayKey(Date.parse(iso)));
+  return `${p.mon} ${p.day}`;
+}
+
+/* ---------------- 5 shipped ---------------- */
+export function Shipped({ pulls, now }: { pulls: Result<Pull[]>; now: number }) {
+  if (!pulls.ok) return <Section id="shipped" n="05" title="Shipped"><ErrorLine msg={pulls.error} /></Section>;
+  const all = merged(pulls.data, 1000);
+  const keys = lastDays(now, 14);
+  const byDay = new Map<string, Pull[]>(keys.map((k) => [k, []]));
+  for (const p of all) byDay.get(dayKey(Date.parse(p.merged_at ?? "")))?.push(p);
+  const inWindow = keys.reduce((a, k) => a + (byDay.get(k)?.length ?? 0), 0);
+  const cols: Col[] = keys.map((k) => {
+    const list = byDay.get(k) ?? [];
+    const kinds = new Map<PrKind, number>();
+    for (const p of list) kinds.set(prKind(p.title), (kinds.get(prKind(p.title)) ?? 0) + 1);
+    const p = dayParts(k);
+    return {
+      key: k,
+      segs: PR_KINDS.map((kd) => ({ cls: `k-${kd}`, n: kinds.get(kd) ?? 0 })),
+      title: `${p.mon} ${p.day}: ${list.length} merged${list.length ? "\n" + list.map((x) => `#${x.number} ${x.title}`).join("\n") : ""}`,
+    };
+  });
+  const recent = all.slice(0, 10);
+  return (
+    <Section id="shipped" n="05" title="Shipped">
+      <DayChart cols={cols} label="Pull requests merged per day for the last 14 days, by kind" />
+      <div className="leg m">
+        {PR_KINDS.map((k) => <span key={k}><i className={`k-${k}`} />{k}</span>)}
+        <span className="r">{inWindow} PRs merged · last 14 days</span>
+      </div>
+      <Sub>Last {recent.length} merged</Sub>
+      {recent.length === 0 ? <Empty>No merged pull requests in the latest 50.</Empty> : (
+        <ul className="mp">
+          {recent.map((p) => (
+            <li key={p.number}>
+              <a className="m" href={p.html_url}>#{p.number}</a>
+              <a className="tx" href={p.html_url}>{p.title}</a>
+              <span className="m dt">{p.merged_at ? fmtDayTime(p.merged_at) : ""}</span>
             </li>
           ))}
         </ul>
-      ))}
+      )}
     </Section>
   );
 }
 
-/* ---------------- 5 activity ---------------- */
-function PrList({ pulls, field, now }: { pulls: Pull[]; field: "merged_at" | "closed_at"; now: number }) {
-  return (
-    <ul className="rows">
-      {pulls.map((p) => (
-        <li key={p.number}>
-          <a href={p.html_url} className="mono">#{p.number}</a>
-          <span className="grow">{truncate(p.title, 100)}</span>
-          <code className="small">{p.head.ref}</code>
-          <span className="muted small">{relTime(p[field], now)}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-export function Activity({ pulls, now }: { pulls: Result<Pull[]>; now: number }) {
-  if (!pulls.ok) return <Section id="activity" n="05" title="Activity"><ErrorLine msg={pulls.error} /></Section>;
-  const m = merged(pulls.data);
-  const c = closedUnmerged(pulls.data);
-  return (
-    <Section id="activity" n="05" title="Activity">
-      <Sub>Recently merged</Sub>
-      {m.length ? <PrList pulls={m} field="merged_at" now={now} /> : <Empty>No merged pull requests in the latest 50.</Empty>}
-      <Sub>Closed without merging</Sub>
-      {c.length ? <PrList pulls={c} field="closed_at" now={now} /> : <Empty>None in the latest 50.</Empty>}
-    </Section>
-  );
+export function Footer() {
+  return <footer className="foot m">Data refreshes every 5 min.</footer>;
 }

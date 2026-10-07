@@ -82,7 +82,7 @@ export function parseBacklog(md: string): BacklogSection[] {
       cur.prs.push({ pr: stripMd(cells[0]), items: stripMd(cells[1]), status: parseStatus(cells[2]), statusRaw: stripMd(cells[2]) });
     }
   }
-  return sections.filter((s) => s.items.length > 0 || s.prs.length > 0);
+  return sections.filter((s) => s.items.length > 0 || s.prs.length > 0 || s.intro);
 }
 
 export function countByStatus(items: { status: Status }[]): Record<Status, number> {

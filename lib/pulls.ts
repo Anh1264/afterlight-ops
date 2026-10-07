@@ -40,3 +40,11 @@ export const merged = (pulls: Pull[], n = 15) =>
   pulls.filter((p) => p.merged_at).sort((a, b) => Date.parse(b.merged_at ?? "") - Date.parse(a.merged_at ?? "")).slice(0, n);
 export const closedUnmerged = (pulls: Pull[], n = 5) =>
   pulls.filter((p) => p.state === "closed" && !p.merged_at).sort((a, b) => Date.parse(b.closed_at ?? "") - Date.parse(a.closed_at ?? "")).slice(0, n);
+
+export type PrKind = "feat" | "fix" | "chore" | "test" | "docs" | "other";
+export const PR_KINDS: PrKind[] = ["feat", "fix", "chore", "test", "docs", "other"];
+/** Kind from the conventional-commit prefix of the PR title; anything else is "other". */
+export function prKind(title: string): PrKind {
+  const m = /^(feat|fix|chore|test|docs)(\([^)]*\))?!?:/i.exec(title.trim());
+  return m ? (m[1].toLowerCase() as PrKind) : "other";
+}

@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { prettyName } from "./format";
+import { docFiles, docTitle, parseSkill, skillDirs, type SkillInfo } from "./team";
 
 export const REPO = process.env.REPO || "Anh1264/afterlight";
 const FIXTURE = process.env.DATA_SOURCE === "fixture";
@@ -119,6 +121,50 @@ async function loadAgents(tree: Result<Tree>): Promise<Result<AgentsData>> {
   return { ok: true, data: { agents, failed } };
 }
 
+export interface DocEntry {
+  path: string;
+  title: string;
+}
+export interface DocsData {
+  specs: DocEntry[];
+  decisions: DocEntry[];
+}
+
+async function loadDocs(tree: Result<Tree>): Promise<Result<DocsData>> {
+  if (!tree.ok) return { ok: false, error: `specs and decisions: needs the file tree (${tree.error})` };
+  const one = async (p: string): Promise<DocEntry> => {
+    const r = await rawFile(`doc ${p}`, p);
+    return { path: p, title: r.ok ? docTitle(p, r.data) : prettyName(p) };
+  };
+  const [specs, decisions] = await Promise.all([
+    Promise.all(docFiles(tree.data, "specs").map(one)),
+    Promise.all(docFiles(tree.data, "decisions").map(one)),
+  ]);
+  return { ok: true, data: { specs, decisions } };
+}
+
+export interface SkillsData {
+  skills: SkillInfo[];
+  failed: string[];
+}
+async function loadSkills(tree: Result<Tree>): Promise<Result<SkillsData>> {
+  if (!tree.ok) return { ok: false, error: `skills: needs the file tree (${tree.error})` };
+  const dirs = skillDirs(tree.data);
+  if (dirs.length === 0) return { ok: false, error: "skills: no .claude/skills/* in tree" };
+  const got = await Promise.all(dirs.map(async (d) => ({ d, r: await rawFile(`skill ${d}`, `.claude/skills/${d}/SKILL.md`) })));
+  const skills: SkillInfo[] = [];
+  const failed: string[] = [];
+  for (const { d, r } of got) {
+    if (r.ok) skills.push(parseSkill(d, r.data));
+    else {
+      skills.push({ name: d, description: "" });
+      failed.push(r.error);
+    }
+  }
+  if (failed.length === dirs.length) return { ok: false, error: failed[0] };
+  return { ok: true, data: { skills, failed } };
+}
+
 export interface Data {
   pulls: Result<Pull[]>;
   runs: Result<Run[]>;
@@ -127,6 +173,8 @@ export interface Data {
   tree: Result<Tree>;
   backlog: Result<string>;
   agents: Result<AgentsData>;
+  docs: Result<DocsData>;
+  skills: Result<SkillsData>;
 }
 
 export async function loadData(): Promise<Data> {
@@ -143,8 +191,9 @@ export async function loadData(): Promise<Data> {
       ? { ok: true, data: runsRaw.data.workflow_runs }
       : { ok: false, error: "CI runs: unexpected response shape" }
     : runsRaw;
-  const agents = await loadAgents(tree);
-  return { pulls: guardArray(pulls, "pull requests"), runs, commitsClaude: guardArray(commitsClaude, "commits (.claude)"), commitsClaudeMd: guardArray(commitsClaudeMd, "commits (CLAUDE.md)"), tree: guardTree(tree), backlog, agents };
+  const gtree = guardTree(tree);
+  const [agents, docs, skills] = await Promise.all([loadAgents(gtree), loadDocs(gtree), loadSkills(gtree)]);
+  return { pulls: guardArray(pulls, "pull requests"), runs, commitsClaude: guardArray(commitsClaude, "commits (.claude)"), commitsClaudeMd: guardArray(commitsClaudeMd, "commits (CLAUDE.md)"), tree: gtree, backlog, agents, docs, skills };
 }
 
 function guardArray<T>(r: Result<T[]>, what: string): Result<T[]> {

@@ -1,4 +1,4 @@
-import { firstLine, firstSentence } from "./format";
+import { firstLine, firstSentence, prettyName, stripMd } from "./format";
 import type { Commit, Tree } from "./github";
 
 export interface AgentInfo {
@@ -83,4 +83,26 @@ export function changeLog(lists: Commit[][], max = 20): ChangeEntry[] {
       });
     }
   return [...seen.values()].sort((a, b) => Date.parse(b.date) - Date.parse(a.date)).slice(0, max);
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+}
+export function parseSkill(dir: string, raw: string): SkillInfo {
+  const fm = parseFrontmatter(raw);
+  return { name: fm.name || dir, description: firstSentence(fm.description || "") };
+}
+
+/** First "# " heading of a markdown file, else a name derived from the file. */
+export function docTitle(file: string, raw: string): string {
+  const m = /^#\s+(.+)$/m.exec(raw);
+  return m ? stripMd(m[1]) : prettyName(file);
+}
+
+/** Initials for a monogram: "qa-engineer" -> "QA", "architect" -> "AR". */
+export function monogram(name: string): string {
+  const parts = name.split(/[-_\s]+/).filter(Boolean);
+  const s = parts.length > 1 ? parts[0][0] + parts[1][0] : (parts[0] ?? "?").slice(0, 2);
+  return s.toUpperCase();
 }

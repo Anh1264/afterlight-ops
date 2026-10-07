@@ -2,7 +2,7 @@ import { parseBacklog } from "@/lib/backlog";
 import { loadData } from "@/lib/github";
 import type { Result } from "@/lib/github";
 import type { BacklogSection } from "@/lib/backlog";
-import { Activity, Header, Needs, Pipeline, Plan, Team } from "./sections";
+import { Footer, Header, Needs, Pipeline, Plan, Shipped, Team } from "./sections";
 
 export const revalidate = 300;
 
@@ -19,15 +19,16 @@ export default async function Page() {
     }
   }
   return (
-    <>
+    <div className="w">
       <Header data={data} now={now} />
-      <main className="wrap">
+      <main>
         <Needs data={data} sections={sections} now={now} />
         <Pipeline runs={data.runs} now={now} />
         <Plan sections={sections} data={data} />
         <Team data={data} now={now} />
-        <Activity pulls={data.pulls} now={now} />
+        <Shipped pulls={data.pulls} now={now} />
       </main>
-    </>
+      <Footer />
+    </div>
   );
 }
