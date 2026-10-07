@@ -178,7 +178,23 @@ export function Pipeline({ runs, now }: { runs: Result<Run[]>; now: number }) {
   const st = buildChains(runs.data);
   const ordered = [...runs.data].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
   const days = dailyBuckets(runs.data, now);
-  const top = st.failureList.slice(0, 20);
+  const all = st.failureList.slice(0, 40);
+  const hot = all.filter((f) => !f.fixedBy);
+  const fixed = all.filter((f) => f.fixedBy);
+  const top = [...hot, ...fixed.slice(0, Math.max(0, 6 - hot.length))];
+  const older = fixed.slice(Math.max(0, 6 - hot.length));
+  const fxRow = (f: (typeof all)[number]) => (
+    <div className="fx" key={f.run.id}>
+      <span className="m">{f.prNumber ? <a href={`${GH}/pull/${f.prNumber}`}>#{f.prNumber}</a> : "–"}</span>
+      <div className="grow">
+        <div className="m fb">{f.branch}</div>
+        <a className="ft" href={f.run.html_url}>{runTitle(f.run)}</a>
+        {f.fixedBy && <div className="fs">Fixed by <a href={f.fixedBy.html_url}>{fixLabel(f.fixedBy)}</a></div>}
+        <div className="fs m">{relTime(f.run.created_at, now)}</div>
+      </div>
+      {f.fixedBy ? <b className="fd">{durMs(f.timeToFix ?? 0)}</b> : <b className="fd still">Still failing</b>}
+    </div>
+  );
   return (
     <Section id="pipeline" n="02" title="Pipeline">
       <div className="kp">
@@ -204,18 +220,13 @@ export function Pipeline({ runs, now }: { runs: Result<Run[]>; now: number }) {
       <Sub>Failure → fix</Sub>
       {top.length === 0 ? <Empty>No failed runs in the last {runs.data.length} runs.</Empty> : (
         <div>
-          {top.map((f) => (
-            <div className="fx" key={f.run.id}>
-              <span className="m">{f.prNumber ? <a href={`${GH}/pull/${f.prNumber}`}>#{f.prNumber}</a> : "–"}</span>
-              <div className="grow">
-                <div className="m fb">{f.branch}</div>
-                <a className="ft" href={f.run.html_url}>{runTitle(f.run)}</a>
-                {f.fixedBy && <div className="fs">Fixed by <a href={f.fixedBy.html_url}>{fixLabel(f.fixedBy)}</a></div>}
-                <div className="fs m">{relTime(f.run.created_at, now)}</div>
-              </div>
-              {f.fixedBy ? <b className="fd">{durMs(f.timeToFix ?? 0)}</b> : <b className="fd still">Still failing</b>}
-            </div>
-          ))}
+          {top.map(fxRow)}
+          {older.length > 0 && (
+            <details className="dn">
+              <summary className="m">{older.length} older</summary>
+              {older.map(fxRow)}
+            </details>
+          )}
         </div>
       )}
     </Section>
@@ -261,7 +272,9 @@ export function Plan({ sections, data }: { sections: Result<BacklogSection[]>; d
             const c = countByStatus(s.items);
             const total = s.items.length;
             const pct = total ? Math.round((c.done / total) * 100) : 0;
-            const open = STATUS_ORDER.flatMap((k) => s.items.filter((i) => i.status === k));
+            const openAll = STATUS_ORDER.flatMap((k) => s.items.filter((i) => i.status === k));
+            const open = openAll.slice(0, 6);
+            const more = openAll.slice(6);
             const done = s.items.filter((i) => i.status === "done");
             return (
               <article className="ps" key={s.name}>
@@ -284,6 +297,12 @@ export function Plan({ sections, data }: { sections: Result<BacklogSection[]>; d
                 </div>
                 <div className="pr">
                   {open.length > 0 && <ul className="items">{open.map((i) => <ItemRow key={i.id} i={i} />)}</ul>}
+                  {more.length > 0 && (
+                    <details className="dn">
+                      <summary className="m">{more.length} more open</summary>
+                      <ul className="items">{more.map((i) => <ItemRow key={i.id} i={i} />)}</ul>
+                    </details>
+                  )}
                   {done.length > 0 && (
                     <details className="dn">
                       <summary className="m">{done.length} done</summary>
